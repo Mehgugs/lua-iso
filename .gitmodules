@@ -1,0 +1,9 @@
+[submodule "lua"]
+	path = lua
+	url = https://github.com/lua/lua.git
+[submodule "LPeg"]
+	path = LPeg
+	url = https://github.com/roberto-ieru/LPeg
+[submodule "luafilesystem"]
+	path = luafilesystem
+	url = https://github.com/lunarmodules/luafilesystem
