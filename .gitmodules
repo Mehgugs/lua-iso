@@ -7,3 +7,6 @@
 [submodule "luafilesystem"]
 	path = luafilesystem
 	url = https://github.com/lunarmodules/luafilesystem
+[submodule "luasocket"]
+	path = luasocket
+	url = https://github.com/lunarmodules/luasocket.git

@@ -2,6 +2,7 @@ const std = @import("std");
 
 // Type helpers
 const String     = []const u8;
+const StringPair = [2]String;
 const SourceList = std.ArrayList(String);
 const FlagList   = std.ArrayList(String);
 fn SliceOf(comptime t: type) type {
@@ -10,6 +11,7 @@ fn SliceOf(comptime t: type) type {
 
 //builder
 const Builder = std.build.Builder;
+const Step    = std.build.Step;
 const InstallDir = std.build.InstallDir;
 const Artifact = *std.build.LibExeObjStep;
 
@@ -20,7 +22,6 @@ fn walk_dir(b: *Builder, sources: *SourceList, folder: String, exclude: SliceOf(
     var walker = dir.iterate();
 
     while (try walker.next()) |entry| {
-        //std.log.info("Found: {s}", .{entry.name});
         if (entry.kind == .File) {
             var trapped = false;
             for (exclude) |ex| {
@@ -41,11 +42,8 @@ fn walk_dir(b: *Builder, sources: *SourceList, folder: String, exclude: SliceOf(
 }
 
 pub fn build(b: *Builder) !void {
-    std.log.info("Starting.", .{});
-
     var liblua_sources  = SourceList.init(b.allocator);
     var lua_sources     = [_]String{"override/lua/lua.c"};
-    var luac_sources    = [_]String{"luac/luac.c"};
     var lpeg_sources    = SourceList.init(b.allocator);
     var lfs_sources     = [_]String{"luafilesystem/src/lfs.c"};
 
@@ -56,13 +54,13 @@ pub fn build(b: *Builder) !void {
     const exclude_lua = [_]String{
         "lua.c",
         "luac.c",
-        "onelua.c"
+        "onelua.c",
+        "ltests.c"
     };
     const no_exclusions = [_]String{};
 
     //Artifacts
     const lua = b.addExecutable("luaiso", null);
-    const luac= b.addExecutable("luaisoc", null);
     const liblua = b.addSharedLibrary("lua5.4.4", null, .unversioned);
     const lpeg = b.addSharedLibrary("lpeg", null, .unversioned);
     const lfs = b.addSharedLibrary("lfs", null, .unversioned);
@@ -73,16 +71,11 @@ pub fn build(b: *Builder) !void {
 
     //Configuration of artifacts:
 
-    inline for ([_]Artifact{lua, luac, liblua, lpeg, lfs}) |art| {
+    inline for ([_]Artifact{lua, liblua, lpeg, lfs}) |art| {
         art.setBuildMode(mode);
         art.setTarget(target);
+        art.addIncludePath("lua");
         art.strip = true;
-        // NB. Fixed errors when compiling LFS / LPeg; investigate.
-
-        if (art != liblua) {
-            art.addIncludePath("lua");
-            art.bundle_compiler_rt = false;
-        }
     }
 
     //Disovering C Sources:
@@ -109,7 +102,6 @@ pub fn build(b: *Builder) !void {
         try flags.append("-DLUA_USE_DLOPEN");
         try lib_flags.append("-fPIC");
         lua.addRPath("$ORIGIN");
-        luac.addRPath("$ORIGIN");
     }
 
     //Initialization of source files
@@ -117,27 +109,41 @@ pub fn build(b: *Builder) !void {
     const c_flags = flags.toOwnedSlice();
     const lib_c_flags = lib_flags.toOwnedSlice();
 
-
     lua.addCSourceFiles(&lua_sources, c_flags);
-    luac.addCSourceFiles(&luac_sources, c_flags);
     liblua.addCSourceFiles(liblua_sources.toOwnedSlice(), c_flags);
     lpeg.addCSourceFiles(lpeg_sources.toOwnedSlice(), lib_c_flags);
     lfs.addCSourceFiles(&lfs_sources, lib_c_flags);
 
+    const luasocket = try buildLuasocket(b, mode, target, lib_c_flags, liblua);
 
     liblua.linkLibC();
     liblua.install();
 
-
-    inline for ([_]Artifact{lua, luac, lpeg, lfs}) |art| {
+    const postbuild = b.step("post-build", "");
+    inline for ([_]Artifact{lua, lpeg, lfs}) |art| {
         art.linkLibrary(liblua);
 
         if (art == lpeg or art == lfs) {
             art.override_dest_dir = .{.custom = "lib/lua/5.4"};
         }
 
-        art.install();
+
+        if (art == lpeg or art == lfs) {
+            if ((target.os_tag == std.Target.Os.Tag.linux) or (target.os_tag == std.Target.Os.Tag.macos)) {
+                const pathb = [_]String{"lib/lua/5.4", art.out_filename[3..]};
+                const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&pathb));
+                redirect.step.dependOn(&art.step);
+                postbuild.dependOn(&redirect.step);
+            } else {
+                art.install();
+            }
+        } else {
+            art.install();
+        }
     }
+
+    b.getInstallStep().dependOn(postbuild);
+    b.getInstallStep().dependOn(luasocket);
 
     //Lua development tools
     {
@@ -170,4 +176,133 @@ pub fn build(b: *Builder) !void {
     //Lpeg.re
     b.installFile("LPeg/re.lua", "share/lua/5.4/re.lua");
 
+}
+
+fn configureLuasocketArtifact(b: *Builder, step: *Step, name: String, parent: String, lib: Artifact, mode: std.builtin.Mode, target: std.zig.CrossTarget) !Artifact {
+    const art =  b.addSharedLibrary(name, null, .unversioned);
+    art.setBuildMode(mode);
+    art.setTarget(target);
+    art.strip = true;
+    art.addIncludePath("lua");
+    art.addIncludePath("luasocket/src");
+    art.linkLibrary(lib);
+    var pathb : [3]String = undefined;
+
+    if ((target.os_tag == std.Target.Os.Tag.linux) or (target.os_tag == std.Target.Os.Tag.macos)) {
+        pathb = [_]String{"lib/lua/5.4/", parent, art.out_filename[3..]};
+    } else {
+        pathb = [_]String{"lib/lua/5.4/", parent, art.out_filename};
+    }
+
+    const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&pathb));
+
+    redirect.step.dependOn(&art.step);
+
+    step.dependOn(&redirect.step);
+
+    return art;
+}
+
+fn buildLuasocket (b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, lib_flags: SliceOf(String), liblua: Artifact) !*Step {
+    const luasocket = b.step("luasocket", "Step for building luasocket and associated dependencies.");
+    var socketflags = FlagList.init(b.allocator);
+
+    //Luasocket's socket.core module
+    const socket_core = try configureLuasocketArtifact(b, luasocket, "core", "socket", liblua, mode, target);
+    var socket_core_sources = SourceList.init(b.allocator);
+
+    const mime_core = try configureLuasocketArtifact(b, luasocket, "core", "mime", liblua, mode, target);
+    const mime_core_sources = [_]String{"luasocket/src/mime.c", "luasocket/src/compat.c"};
+
+    const socket_core_common = [_]String{
+          "luasocket/src/luasocket.c"
+        , "luasocket/src/timeout.c"
+        , "luasocket/src/buffer.c"
+        , "luasocket/src/io.c"
+        , "luasocket/src/auxiliar.c"
+        , "luasocket/src/options.c"
+        , "luasocket/src/inet.c"
+        , "luasocket/src/except.c"
+        , "luasocket/src/select.c"
+        , "luasocket/src/tcp.c"
+        , "luasocket/src/udp.c"
+        , "luasocket/src/compat.c"
+    };
+
+    try socket_core_sources.appendSlice(&socket_core_common);
+
+    try socketflags.appendSlice(lib_flags);
+    try socketflags.append("-DLUASOCKET_DEBUG");
+    var socket_cflags: SliceOf(String) = &socket_core_common;
+
+    if(target.os_tag == std.Target.Os.Tag.windows) {
+        try socketflags.append("-DWINVER=0x0501");
+        socket_cflags = socketflags.toOwnedSlice();
+        socket_core.linkSystemLibrary("ws2_32");
+        try socket_core_sources.append("luasocket/src/wsocket.c");
+        try socket_core_sources.append("override/luasocket/gai_strerrorA.c");
+        try socket_core_sources.append("override/luasocket/gai_strerrorW.c");
+    }
+    else if (target.os_tag == std.Target.Os.Tag.macos) {
+        try socketflags.append("-DUNIX_HAS_SUN_LEN");
+    }
+
+    if ((target.os_tag == std.Target.Os.Tag.macos) or (target.os_tag == std.Target.Os.Tag.linux)) {
+        socket_cflags = socketflags.toOwnedSlice();
+        try socket_core_sources.append("luasocket/src/usocket.c");
+
+        const unix = try configureLuasocketArtifact(b, luasocket, "unix", "socket", liblua, mode, target);
+        const unix_sources = [_]String{
+            "luasocket/src/buffer.c"
+            , "luasocket/src/compat.c"
+            , "luasocket/src/auxiliar.c"
+            , "luasocket/src/options.c"
+            , "luasocket/src/timeout.c"
+            , "luasocket/src/io.c"
+            , "luasocket/src/usocket.c"
+            , "luasocket/src/unix.c"
+            , "luasocket/src/unixdgram.c"
+            , "luasocket/src/unixstream.c"
+        };
+
+        unix.addCSourceFiles(&unix_sources, socket_cflags);
+
+        const serial = try configureLuasocketArtifact(b, luasocket, "serial", "socket", liblua, mode, target);
+        const serial_sources = [_]String{
+            "luasocket/src/buffer.c"
+            , "luasocket/src/compat.c"
+            , "luasocket/src/auxiliar.c"
+            , "luasocket/src/options.c"
+            , "luasocket/src/timeout.c"
+            , "luasocket/src/io.c"
+            , "luasocket/src/usocket.c"
+            , "luasocket/src/serial.c"
+        };
+        serial.addCSourceFiles(&serial_sources, socket_cflags);
+    }
+
+    socket_core.addCSourceFiles(socket_core_sources.toOwnedSlice(), socket_cflags);
+    mime_core.addCSourceFiles(&mime_core_sources, socket_cflags);
+
+    const luafiles = [_]StringPair{
+        .{"socket/http.lua", "luasocket/src/http.lua"},
+        .{"socket/tp.lua", "luasocket/src/tp.lua"},
+        .{"socket/ftp.lua", "luasocket/src/ftp.lua"},
+        .{"socket/headers.lua", "luasocket/src/headers.lua"},
+        .{"socket/smtp.lua", "luasocket/src/smtp.lua"},
+        .{"socket/url.lua", "luasocket/src/url.lua"},
+        .{"ltn12.lua", "luasocket/src/ltn12.lua"},
+        .{"socket.lua", "luasocket/src/socket.lua"},
+        .{"mime.lua", "luasocket/src/mime.lua"}
+    };
+
+    inline for (luafiles) |pair| {
+        const folder =  pair[0];
+        const file =  pair[1];
+        const pathb = [_]String{"share/lua/5.4/", folder};
+        const step = b.addInstallFile(.{.path = file}, b.pathJoin(&pathb));
+        luasocket.dependOn(&step.step);
+    }
+
+    return luasocket;
 }
