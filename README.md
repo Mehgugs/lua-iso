@@ -19,16 +19,6 @@ A portable lua distribution that is isolated from environment variables.
 Further lua libraries may be installed into the share path (share/lua/5.4).
 Further native modules may be installed into th lib path (lib/lua/5.4).
 
-## NOTE for POSIX users
-
-The build script currently does not strip the lib prefix from lpeg and lfs, this is because
-zig has no real documentation and I'm not sure how to do that yet. 😅
-
-```
--- This *should* fix it.
-os.rename("lib/lua/5.4/liblfs.so", "lib/lua/5.4/lfs.so")
-os.rename("lib/lua/5.4/liblpeg.so", "lib/lua/5.4/lpeg.so")
-```
 ## Isolation
 
 This distribution of lua should be self-contained within the directory structure. This folder
