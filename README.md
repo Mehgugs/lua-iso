@@ -7,14 +7,14 @@ A portable lua distribution that is isolated from environment variables.
 - luaiso
   The interpreter.
 
-- luaisoc
-  The bytecode compiler.
-
 - lpeg
   The lpeg parsing library. (The re module is also included)
 
 - lfs
   The luafilesystem library.
+  
+- socket
+  The luasocket library for networking.
 
 Further lua libraries may be installed into the share path (share/lua/5.4).
 Further native modules may be installed into th lib path (lib/lua/5.4).
