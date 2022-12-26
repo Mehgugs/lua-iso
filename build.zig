@@ -65,6 +65,17 @@ pub fn build(b: *Builder) !void {
     const lpeg = b.addSharedLibrary("lpeg", null, .unversioned);
     const lfs = b.addSharedLibrary("lfs", null, .unversioned);
 
+    //Optional Extras
+    const allextras = b.option(bool, "all", "Set this flag to build all the extras.") orelse false;
+    const doluasec = b.option(bool, "luasec", "Set this flag to build luasec (also causes luasocket to be built).") orelse allextras;
+    const doluasoc = (b.option(bool, "luasocket", "Set this flag to build luasocket.") orelse allextras) or doluasec;
+    const dolanes  = b.option(bool, "lanes", "Set ths flag to build lanes,") orelse allextras;
+
+    if (doluasoc) std.log.info("Building optional dependency luasocket.", .{});
+    if (doluasec) std.log.info("Building optional dependency luasec.", .{});
+    if (dolanes) std.log.info("Building optional dependency lanes.", .{});
+
+
     //Target & build mode
     const target = b.standardTargetOptions(.{.default_target = std.zig.CrossTarget.fromTarget(b.host.target)});
     const mode = std.builtin.Mode.ReleaseSmall; // NB. Hardcoded to ReleaseSmall to prevent errors on windows; investigate.
@@ -114,8 +125,6 @@ pub fn build(b: *Builder) !void {
     lpeg.addCSourceFiles(lpeg_sources.toOwnedSlice(), lib_c_flags);
     lfs.addCSourceFiles(&lfs_sources, lib_c_flags);
 
-    const luasocket = try buildLuasocket(b, mode, target, lib_c_flags, liblua);
-
     liblua.linkLibC();
     liblua.install();
 
@@ -143,7 +152,12 @@ pub fn build(b: *Builder) !void {
     }
 
     b.getInstallStep().dependOn(postbuild);
-    b.getInstallStep().dependOn(luasocket);
+
+    if (doluasoc) try buildLuasocket(b, mode, target, lib_c_flags, liblua);
+    if (doluasec) try buildLuasec(b, mode, target, lib_c_flags, liblua);
+    if (dolanes) try buildLanes(b, mode, target, lib_c_flags, liblua);
+
+
 
     //Lua development tools
     {
@@ -186,15 +200,15 @@ fn configureLuasocketArtifact(b: *Builder, step: *Step, name: String, parent: St
     art.addIncludePath("lua");
     art.addIncludePath("luasocket/src");
     art.linkLibrary(lib);
-    var pathb : [3]String = undefined;
+    var pathb : String = undefined;
 
     if ((target.os_tag == std.Target.Os.Tag.linux) or (target.os_tag == std.Target.Os.Tag.macos)) {
-        pathb = [_]String{"lib/lua/5.4/", parent, art.out_filename[3..]};
+        pathb = art.out_filename[3..];
     } else {
-        pathb = [_]String{"lib/lua/5.4/", parent, art.out_filename};
+        pathb = art.out_filename;
     }
 
-    const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&pathb));
+    const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&.{"lib/lua/5.4/", parent, pathb}));
 
     redirect.step.dependOn(&art.step);
 
@@ -203,7 +217,7 @@ fn configureLuasocketArtifact(b: *Builder, step: *Step, name: String, parent: St
     return art;
 }
 
-fn buildLuasocket (b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, lib_flags: SliceOf(String), liblua: Artifact) !*Step {
+fn buildLuasocket (b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, lib_flags: SliceOf(String), liblua: Artifact) !void {
     const luasocket = b.step("luasocket", "Step for building luasocket and associated dependencies.");
     var socketflags = FlagList.init(b.allocator);
 
@@ -304,5 +318,177 @@ fn buildLuasocket (b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTar
         luasocket.dependOn(&step.step);
     }
 
-    return luasocket;
+    b.getInstallStep().dependOn(luasocket);
+
+    //return luasocket;
+}
+
+fn buildLuasec (b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, lib_flags: SliceOf(String), liblua: Artifact) !void {
+    const luasec = b.step("luasec", "Step for building luasec.");
+    var secflags = FlagList.init(b.allocator);
+    var sources = SourceList.init(b.allocator);
+    const art = b.addSharedLibrary("ssl", null, .unversioned);
+
+    art.setBuildMode(mode);
+    art.setTarget(target);
+    art.strip = true;
+    art.addIncludePath("lua");
+    art.addIncludePath("luasec/src");
+    art.addIncludePath("luasec/src/luasocket");
+    art.bundle_compiler_rt = false;
+
+    var triplet = try target.vcpkgTriplet(b.allocator, .Dynamic);
+
+    if ((target.os_tag == std.Target.Os.Tag.macos) or (target.os_tag == std.Target.Os.Tag.linux)) {
+        triplet = try std.fmt.allocPrint(b.allocator, "{s}-dynamic", .{triplet});
+        art.addRPath("$ORIGIN");
+    }
+
+    const run_vcpkg = b.addSystemCommand(&.{"vcpkg", "install", "--triplet", triplet});
+
+    luasec.dependOn(&run_vcpkg.step);
+
+    art.addIncludePath(b.pathJoin(&.{"vcpkg_installed", triplet, "include"}));
+    art.addLibraryPath(b.pathJoin(&.{"vcpkg_installed", triplet, "lib"}));
+
+    try sources.appendSlice(&.{
+        "luasec/src/options.c", "luasec/src/config.c", "luasec/src/ec.c",
+        "luasec/src/x509.c", "luasec/src/context.c", "luasec/src/ssl.c",
+        "luasec/src/luasocket/buffer.c", "luasec/src/luasocket/io.c",
+        "luasec/src/luasocket/timeout.c"
+    });
+
+    try secflags.appendSlice(lib_flags);
+
+    if(target.os_tag == std.Target.Os.Tag.windows) {
+        art.addLibraryPath(b.pathJoin(&.{"vcpkg_installed", triplet, "bin"}));
+        art.linkSystemLibrary("ws2_32");
+        try sources.append("luasec/src/luasocket/wsocket.c");
+        try sources.append("override/luasocket/gai_strerrorA.c");
+        try sources.append("override/luasocket/gai_strerrorW.c");
+        try secflags.appendSlice(&.{
+            "-DWIN32", "-DNDEBUG", "-D_WINDOWS", "-D_USRDLL", "-DLSEC_EXPORTS", "-DBUFFER_DEBUG", "-DLSEC_API=__declspec(dllexport)",
+            "-DWITH_LUASOCKET", "-DLUASOCKET_DEBUG",
+            "-DLUASEC_INET_NTOP", "-DWINVER=0x0501", "-D_WIN32_WINNT=0x0501", "-DNTDDI_VERSION=0x05010300"
+        });
+    } else if ((target.os_tag == std.Target.Os.Tag.macos) or (target.os_tag == std.Target.Os.Tag.linux)) {
+        try secflags.appendSlice(&.{"-DWITH_LUASOCKET", "-DLUASOCKET_DEBUG"});
+        try sources.append("luasec/src/luasocket/usocket.c");
+    }
+
+    art.addCSourceFiles(sources.toOwnedSlice(), secflags.toOwnedSlice());
+    art.linkLibrary(liblua);
+    art.linkSystemLibrary("libssl");
+    art.linkSystemLibrary("libcrypto");
+
+    {
+        var pathb : [2]String = undefined;
+        if ((target.os_tag == std.Target.Os.Tag.linux) or (target.os_tag == std.Target.Os.Tag.macos)) {
+            pathb = [_]String{"lib/lua/5.4/", art.out_filename[3..]};
+        } else {
+            pathb = [_]String{"lib/lua/5.4/", art.out_filename};
+        }
+
+        const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&pathb));
+
+        redirect.step.dependOn(&art.step);
+
+        luasec.dependOn(&redirect.step);
+    }
+
+    const luafiles = [_]StringPair{
+        .{"ssl/https.lua", "luasec/src/https.lua"},
+        .{"ssl.lua", "luasec/src/ssl.lua"},
+    };
+
+    var vcitems1 : String = undefined;
+    var vcdest1 : String = undefined;
+
+    var vcitems2 : String = undefined;
+    var vcdest2 : String = undefined;
+
+    if (target.os_tag == std.Target.Os.Tag.windows) {
+        vcitems1 = b.pathJoin(&.{"vcpkg_installed", triplet, "bin", "libssl-3-x64.dll"});
+        vcdest1 = b.pathJoin(&.{"bin", "libssl-3-x64.dll"});
+
+        vcitems2 = b.pathJoin(&.{"vcpkg_installed", triplet, "bin", "libcrypto-3-x64.dll"});
+        vcdest2 = b.pathJoin(&.{"bin", "libcrypto-3-x64.dll"});
+    } else {
+        vcitems1 = b.pathJoin(&.{"vcpkg_installed", triplet, "lib", "libssl.so.3"});
+        vcdest1 = b.pathJoin(&.{"lib/lua/5.4", "libssl.so.3"});
+
+        vcitems2 = b.pathJoin(&.{"vcpkg_installed", triplet, "lib", "libcrypto.so.3"});
+        vcdest2 = b.pathJoin(&.{"lib/lua/5.4", "libcrypto.so.3"});
+    }
+
+    const ssllib = b.addInstallFile(.{.path = vcitems1}, vcdest1);
+    const cryptolib = b.addInstallFile(.{.path = vcitems2}, vcdest2);
+
+    luasec.dependOn(&ssllib.step);
+    luasec.dependOn(&cryptolib.step);
+
+    inline for (luafiles) |pair| {
+        const folder =  pair[0];
+        const file =  pair[1];
+        const pathb = [_]String{"share/lua/5.4/", folder};
+        const step = b.addInstallFile(.{.path = file}, b.pathJoin(&pathb));
+        luasec.dependOn(&step.step);
+    }
+
+    b.getInstallStep().dependOn(luasec);
+
+    //return luasec;
+}
+
+fn buildLanes(b: *Builder, mode: std.builtin.Mode, target: std.zig.CrossTarget, lib_flags: SliceOf(String), liblua: Artifact) !void {
+    const lanes = b.step("lanes", "Step for building lanes.");
+    const art = b.addSharedLibrary("core", null, .unversioned);
+
+    art.setBuildMode(mode);
+    art.setTarget(target);
+    art.strip = true;
+    art.addIncludePath("lua");
+    art.addIncludePath("lanes/src");
+    art.bundle_compiler_rt = false;
+
+    art.addCSourceFiles(&.{
+        "lanes/src/cancel.c",
+        "lanes/src/compat.c",
+        "lanes/src/deep.c",
+        "lanes/src/keeper.c",
+        "lanes/src/lanes.c",
+        "lanes/src/linda.c",
+        "lanes/src/tools.c",
+        "lanes/src/state.c",
+        "lanes/src/threading.c",
+        "lanes/src/universe.c"
+    }, lib_flags);
+
+    art.linkLibrary(liblua);
+
+    if ((target.os_tag == std.Target.Os.Tag.macos) or (target.os_tag == std.Target.Os.Tag.linux)) {
+        art.linkSystemLibrary("pthread");
+    }
+
+    {
+        var pathb : String = undefined;
+        if ((target.os_tag == std.Target.Os.Tag.linux) or (target.os_tag == std.Target.Os.Tag.macos)) {
+            pathb = art.out_filename[3..];
+        } else {
+            pathb = art.out_filename;
+        }
+
+        const redirect = b.addInstallFile(art.getOutputSource(), b.pathJoin(&.{"lib/lua/5.4/lanes/", pathb}));
+
+        redirect.step.dependOn(&art.step);
+
+        lanes.dependOn(&redirect.step);
+    }
+
+    const step = b.addInstallFile(.{.path = "lanes/src/lanes.lua"}, "share/lua/5.4/lanes.lua");
+    lanes.dependOn(&step.step);
+
+    b.getInstallStep().dependOn(lanes);
+
+    //return lanes;
 }

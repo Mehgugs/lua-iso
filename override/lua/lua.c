@@ -38,7 +38,13 @@ static const char *progname = LUA_PROGNAME;
 
 
 #if defined(LUA_USE_POSIX)   /* { */
-#include <unistd.h>
+#if defined(__APPLE__) && defined(__MACH__)
+  #include <mach-o/dyld.h>
+  #define pkg_share_ext ".dylib"
+#else
+  #include <unistd.h>
+  #define pkg_share_ext ".so"
+#endif
 #if !defined(LUA_BOOTSTRAP_PKG)
   #define LUA_BOOTSTRAP_PKG "local loc, ext = ...  loc = loc or arg[0] ext = ext or \".so\"  local exeat = loc:find(\"[^/]+$\") local exedir = loc:sub(1, exeat - 2)  local sharepath = exedir .. \"/../share/lua/5.4\"  local paths = {     exedir .. \"/bin/lua/?.lua\",     exedir .. \"/bin/lua/?/init.lua\",     exedir .. \"/bin/?.lua\",     exedir .. \"/bin/?/init.lua\",     sharepath .. \"/?.lua\",     sharepath .. \"/?/init.lua\" }  local sopaths = {     exedir .. \"/?\"..ext,     exedir .. \"/loadall\"..ext,     exedir .. \"/../lib/lua/5.4/?\"..ext, }  package.path = table.concat(paths, \";\") package.cpath = table.concat(sopaths, \";\")"
 #endif
@@ -613,23 +619,30 @@ static int pmain (lua_State *L) {
   createargtable(L, argv, argc, script);  /* create table 'arg' */
   lua_gc(L, LUA_GCGEN, 0, 0);  /* GC in generational mode */
 
-#if defined(LUA_USE_POSIX) && defined(LUA_BOOTSTRAP_PKG)
-    char path[PATH_MAX];
-
-    if (readlink("/proc/self/exe", &path, PATH_MAX) != -1) {
-    int status = luaL_loadbuffer(L, LUA_BOOTSTRAP_PKG, 588, "package.bootstrap");
-      if (status == LUA_OK) {
-        lua_pushstring(L, &path);
-        lua_pushstring(L, ".so");
-        status = docall(L, 2, 0);
-        if (status != LUA_OK) report(L, status);
+  #if defined(LUA_USE_POSIX) && defined(LUA_BOOTSTRAP_PKG)
+      size_t plen = PATH_MAX;
+      char path[PATH_MAX];
+      int pstatus;
+      #if defined(__APPLE__) && defined(__MACH__)
+        pstatus = _NSGetExecutablePath(&path, &plen);
+        //NB. we could try again with a bigger buffer (plen will tell us what we need after this call)
+      #else //assume procfs available
+        pstatus = readlink("/proc/self/exe", &path, PATH_MAX);
+      #endif
+      if (pstatus != -1) {
+        int status = luaL_loadbuffer(L, LUA_BOOTSTRAP_PKG, 588, "package.bootstrap");
+        if (status == LUA_OK) {
+          lua_pushstring(L, &path);
+          lua_pushliteral(L, pkg_share_ext);
+          status = docall(L, 2, 0);
+          if (status != LUA_OK) report(L, status);
+        } else {
+          report(L, status);
+        }
       } else {
-        report(L, status);
+        l_message(L, "Initializing package bootstrap was not successful.");
       }
-    } else {
-      l_message(L, "Initializing package bootstrap was not successful.");
-    }
-#endif
+  #endif
 
   if (!runargs(L, argv, script))  /* execute arguments -e and -l */
     return 0;  /* something failed */

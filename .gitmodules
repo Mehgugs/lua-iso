@@ -10,3 +10,9 @@
 [submodule "luasocket"]
 	path = luasocket
 	url = https://github.com/lunarmodules/luasocket.git
+[submodule "luasec"]
+	path = luasec
+	url = https://github.com/brunoos/luasec
+[submodule "lanes"]
+	path = lanes
+	url = https://github.com/LuaLanes/lanes

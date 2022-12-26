@@ -1,0 +1,8 @@
+{
+  "name": "luaiso",
+  "version-string": "0",
+  "dependencies": [
+    "openssl"
+  ],
+  "builtin-baseline": "e9d35a26f8081ab88035a1c8d9af38c27b52d135"
+}
