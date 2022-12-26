@@ -13,9 +13,6 @@ A portable lua distribution that is isolated from environment variables.
 - lfs
   The luafilesystem library.
   
-- socket
-  The luasocket library for networking.
-
 - socket \[ -Dluasocket \]
   The luasocket networking library.
 
