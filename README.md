@@ -1,3 +1,7 @@
+# Archival 
+
+This experimentation with build.zig has served its purpose; I am currently working on a similar project which uses zig with ziglua. 
+
 # lua-iso
 
 A portable lua distribution that is isolated from environment variables.
